@@ -115,8 +115,10 @@ impl Limiter {
                         // If total load > limit, throttle the highest consumer that isn't us
                         if total_load > limit as f32 {
                             sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-                            // Find highest cpu process
+                            // Find highest cpu process, excluding ourselves
+                            let myself = std::process::id() as i32;
                             sys.processes().iter()
+                                .filter(|(pid, _)| pid.as_u32() as i32 != myself)
                                 .max_by(|(_, a), (_, b)| a.cpu_usage().partial_cmp(&b.cpu_usage()).unwrap_or(std::cmp::Ordering::Equal))
                                 .map(|(pid, _)| pid.as_u32() as i32)
                         } else {
