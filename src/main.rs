@@ -13,13 +13,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let limiter = Arc::new(Limiter::new());
     limiter.start_background_task();
 
-    // Icon generation (Red 32x32)
-    let width = 32u32;
-    let height = 32u32;
-    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-    for _ in 0..(width * height) {
-        rgba.extend_from_slice(&[255, 0, 0, 255]);
-    }
+    // Load icon from embedded file
+    let icon_bytes = include_bytes!("icon.png");
+    let image = image::load_from_memory(icon_bytes)
+        .expect("Failed to load icon")
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    let rgba = image.into_raw();
     let icon = Icon::from_rgba(rgba, width, height)?;
 
     // Menu
