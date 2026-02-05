@@ -26,12 +26,14 @@ pub struct CpuLimiterApp {
 
 impl CpuLimiterApp {
     pub fn new(
-        _cc: &eframe::CreationContext,
+        cc: &eframe::CreationContext,
         limiter: Arc<Limiter>,
         tray_icon: Option<TrayIcon>,
         quit_menu_id: MenuId,
     ) -> Self {
-        // Customize look if needed in cc.egui_ctx
+        // --- Visual Customization ---
+        configure_visuals(&cc.egui_ctx);
+
         Self {
             limiter,
             system: System::new_all(),
@@ -78,7 +80,6 @@ impl CpuLimiterApp {
         while let Ok(event) = receiver.try_recv() {
             if event.id == self.quit_menu_id {
                 self.allow_close = true;
-                // Ensure window is visible in case user expects confirmation flash.
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -133,87 +134,173 @@ impl eframe::App for CpuLimiterApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
+        // --- Main UI Layout ---
+        
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("CPU Limiter");
+            // Header
+            ui.add_space(10.0);
+            ui.vertical_centered(|ui| {
+                ui.heading(egui::RichText::new("⚡ CPU Limiter").size(24.0).strong());
+                ui.label(egui::RichText::new("Monitor & Control Process Usage").weak().italics());
+            });
+            ui.add_space(15.0);
+
+            // Status Card
+            let status_color = if self.is_active {
+                egui::Color32::from_rgb(0, 200, 100) // Green
+            } else {
+                egui::Color32::from_rgb(200, 200, 200) // Gray
+            };
+            
+            egui::Frame::group(ui.style())
+                .fill(ui.style().visuals.window_fill())
+                .stroke(egui::Stroke::new(1.0, ui.style().visuals.widgets.noninteractive.bg_stroke.color))
+                .inner_margin(10.0)
+                .corner_radius(8)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Status:").strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                             if self.is_active {
+                                ui.label(egui::RichText::new("ACTIVE").color(status_color).strong());
+                            } else {
+                                ui.label(egui::RichText::new("INACTIVE").color(status_color));
+                            }
+                        });
+                    });
+                });
 
             ui.add_space(10.0);
 
-            // Controls
-            ui.horizontal(|ui| {
-                ui.label("Limit %:");
-                if ui
-                    .add(egui::Slider::new(&mut self.limit_value, 1..=99).text("%"))
-                    .changed()
-                {
-                    self.limiter.set_limit(self.limit_value);
-                }
-            });
+            // Controls Card
+            egui::Frame::group(ui.style())
+                .inner_margin(10.0)
+                .corner_radius(8)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(egui::RichText::new("Configuration").strong());
+                    ui.add_space(5.0);
 
-            ui.horizontal(|ui| {
-                if ui
-                    .checkbox(&mut self.global_mode, "Global Auto-Limit Mode")
-                    .changed()
-                {
-                    if self.global_mode {
-                        self.limiter.set_global(self.limit_value);
-                    } else {
-                        // Re-set target if we go back to targeted mode
-                        if let Some(pid) = self.selected_pid {
-                            self.limiter.set_target(pid);
+                    // Limit Slider
+                    ui.horizontal(|ui| {
+                        ui.label("Limit Target:");
+                        ui.add(egui::Slider::new(&mut self.limit_value, 1..=99).text("% CPU"))
+                            .changed().then(|| {
+                                self.limiter.set_limit(self.limit_value);
+                            });
+                    });
+                    
+                    ui.add_space(5.0);
+
+                    // Global Mode Checkbox
+                    if ui.checkbox(&mut self.global_mode, "Global Auto-Limit Mode")
+                        .on_hover_text("Automatically limit the highest CPU consuming process")
+                        .changed() 
+                    {
+                        if self.global_mode {
+                            self.limiter.set_global(self.limit_value);
+                        } else {
+                            if let Some(pid) = self.selected_pid {
+                                self.limiter.set_target(pid);
+                            }
                         }
                     }
-                }
-            });
 
-            let btn_text = if self.is_active {
-                "Stop Limiting"
-            } else {
-                "Start Limiting"
-            };
-            if ui.button(btn_text).clicked() {
-                self.is_active = !self.is_active;
-                self.limiter.toggle(self.is_active);
-            }
+                    ui.add_space(10.0);
 
-            if self.is_active {
-                ui.colored_label(egui::Color32::RED, "Limiter ACTIVE");
-            } else {
-                ui.label("Limiter Inactive");
-            }
+                    // Big Start/Stop Button
+                    let btn_text = if self.is_active { "⏹ Stop Limiting" } else { "▶ Start Limiting" };
+                    let btn = egui::Button::new(egui::RichText::new(btn_text).size(16.0).color(egui::Color32::WHITE))
+                        .min_size(egui::vec2(ui.available_width(), 32.0))
+                        .fill(if self.is_active { egui::Color32::from_rgb(200, 60, 60) } else { egui::Color32::from_rgb(60, 140, 200) });
+                    
+                    if ui.add(btn).clicked() {
+                        self.is_active = !self.is_active;
+                        self.limiter.toggle(self.is_active);
+                    }
+                });
 
-            ui.separator();
+            ui.add_space(10.0);
 
-            // Process List
+            // Process List Section
+            ui.label(egui::RichText::new("Processes").strong());
+            
+            // Search Bar
             ui.horizontal(|ui| {
-                ui.label("Search:");
-                ui.text_edit_singleline(&mut self.filter_text);
+                ui.label("🔍");
+                ui.add(egui::TextEdit::singleline(&mut self.filter_text).hint_text("Search process...").desired_width(ui.available_width()));
             });
 
-            ui.separator();
+            ui.add_space(5.0);
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                // Determine which subset to show
-                let filtered: Vec<_> = self
-                    .cached_processes
-                    .iter()
+            // List
+            // Calculate height for list (available - footer spacing if any)
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                let filtered: Vec<_> = self.cached_processes.iter()
                     .filter(|(_, name, _)| {
-                        self.filter_text.is_empty()
-                            || name
-                                .to_lowercase()
-                                .contains(&self.filter_text.to_lowercase())
+                        self.filter_text.is_empty() || name.to_lowercase().contains(&self.filter_text.to_lowercase())
                     })
                     .collect();
 
-                for (pid, name, cpu) in filtered {
-                    let is_selected = Some(*pid) == self.selected_pid;
-                    let label = format!("[{}] {} - {:.1}% CPU", pid, name, cpu);
+                if filtered.is_empty() {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(20.0);
+                        ui.label(egui::RichText::new("No processes found").weak());
+                    });
+                } else {
+                     egui::Grid::new("process_grid")
+                        .striped(true)
+                        .spacing([10.0, 4.0])
+                        .min_col_width(ui.available_width() / 4.0) 
+                        .show(ui, |ui| {
+                            // Header
+                            ui.strong("PID");
+                            ui.strong("Name");
+                            ui.strong("CPU");
+                            ui.end_row();
 
-                    if ui.selectable_label(is_selected, label).clicked() {
-                        self.selected_pid = Some(*pid);
-                        if !self.global_mode {
-                            self.limiter.set_target(*pid);
-                        }
-                    }
+                            for (pid, name, cpu) in filtered {
+                                let is_selected = Some(*pid) == self.selected_pid;
+                                let pid_text = format!("{}", pid);
+                                let cpu_text = format!("{:.1}%", cpu);
+                                
+                                // PID Column
+                                if ui.selectable_label(is_selected, &pid_text).clicked() {
+                                    self.selected_pid = Some(*pid);
+                                    if !self.global_mode {
+                                        self.limiter.set_target(*pid);
+                                    }
+                                }
+                                
+                                // Name Column
+                                if ui.selectable_label(is_selected, name).clicked() {
+                                    self.selected_pid = Some(*pid);
+                                    if !self.global_mode {
+                                        self.limiter.set_target(*pid);
+                                    }
+                                }
+
+                                // CPU Column (Colorize high usage)
+                                let cpu_color = if *cpu > 50.0 {
+                                    egui::Color32::RED
+                                } else if *cpu > 20.0 {
+                                    egui::Color32::from_rgb(255, 165, 0) // Orange
+                                } else {
+                                    ui.visuals().text_color()
+                                };
+                                
+                                if ui.selectable_label(is_selected, egui::RichText::new(&cpu_text).color(cpu_color)).clicked() {
+                                    self.selected_pid = Some(*pid);
+                                    if !self.global_mode {
+                                        self.limiter.set_target(*pid);
+                                    }
+                                }
+
+                                ui.end_row();
+                            }
+                        });
                 }
             });
         });
@@ -221,4 +308,21 @@ impl eframe::App for CpuLimiterApp {
         // Request repaint periodically for stats update
         ctx.request_repaint_after(Duration::from_millis(500));
     }
+}
+
+// Configures the overall look and feel
+fn configure_visuals(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+    
+    visuals.window_corner_radius = egui::CornerRadius::same(8);
+    visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(4);
+    visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(4);
+    visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(4);
+    visuals.widgets.active.corner_radius = egui::CornerRadius::same(4);
+    visuals.widgets.open.corner_radius = egui::CornerRadius::same(4);
+    
+    visuals.selection.bg_fill = egui::Color32::from_rgb(0, 100, 200);
+    visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 180, 255));
+    
+    ctx.set_visuals(visuals);
 }
