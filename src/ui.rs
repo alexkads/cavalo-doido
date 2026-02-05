@@ -171,11 +171,12 @@ impl eframe::App for CpuLimiterApp {
         let card_color = egui::Color32::from_rgb(30, 32, 45);
         
         let custom_frame = egui::Frame::NONE
-            .fill(bg_color)
-            .inner_margin(egui::Margin::symmetric(24, 12));
+            .fill(bg_color);
 
         egui::CentralPanel::default().frame(custom_frame).show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                egui::Frame::new().inner_margin(egui::Margin::symmetric(24, 16)).show(ui, |ui| {
                 
                 // === HEADER ===
                 ui.add_space(8.0);
@@ -412,7 +413,7 @@ impl eframe::App for CpuLimiterApp {
                                     egui::Grid::new("process_grid_modern")
                                         .striped(true)
                                         .num_columns(3)
-                                        .spacing([12.0, 6.0])
+                                        .spacing([20.0, 10.0])
                                         .min_col_width(ui.available_width() / 4.0)
                                         .show(ui, |ui| {
                                             // Header
@@ -496,6 +497,8 @@ impl eframe::App for CpuLimiterApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new("Made with ❤️ in Rust").size(10.0).color(egui::Color32::from_white_alpha(60)));
                     });
+                });
+
                 });
             });
         });
