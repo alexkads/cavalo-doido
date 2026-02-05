@@ -409,22 +409,28 @@ impl eframe::App for CpuLimiterApp {
                 });
                 ui.add_space(8.0);
 
-                egui::Frame::group(ui.style())
-                    .fill(egui::Color32::from_rgb(25, 26, 35))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(10)))
-                    .corner_radius(10)
-                    .inner_margin(8.0)
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .max_height(350.0)
-                            .auto_shrink([false; 2])
+                let row_height = ui.text_style_height(&egui::TextStyle::Body).max(18.0);
+                let list_height = ((row_height + ui.spacing().item_spacing.y) * 10.0 + 32.0).max(260.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), list_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        egui::Frame::group(ui.style())
+                            .fill(egui::Color32::from_rgb(25, 26, 35))
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(10)))
+                            .corner_radius(10)
+                            .inner_margin(8.0)
                             .show(ui, |ui| {
-                                let filtered: Vec<_> = self.cached_processes.iter()
-                                    .filter(|(_, name, _)| {
-                                        self.filter_text.is_empty() || name.to_lowercase().contains(&self.filter_text.to_lowercase())
-                                    })
-                                    .take(100) // Limit for performance
-                                    .collect();
+                                egui::ScrollArea::vertical()
+                                    .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
+                                    .auto_shrink([false; 2])
+                                    .show(ui, |ui| {
+                                        let filtered: Vec<_> = self.cached_processes.iter()
+                                            .filter(|(_, name, _)| {
+                                                self.filter_text.is_empty() || name.to_lowercase().contains(&self.filter_text.to_lowercase())
+                                            })
+                                            .take(100) // Limit for performance
+                                            .collect();
 
                                 if filtered.is_empty() {
                                     ui.vertical_centered(|ui| {
@@ -511,6 +517,8 @@ impl eframe::App for CpuLimiterApp {
                                 }
                             });
                     });
+                },
+                );
 
                 ui.add_space(16.0);
                 
