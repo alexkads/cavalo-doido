@@ -106,8 +106,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let limiter = Arc::new(Limiter::new());
             limiter.start_background_task();
 
-            // Load icon from embedded file
-            let icon_bytes = include_bytes!("icon.png");
+            // Load tray icon from embedded file (template icon for macOS)
+            let icon_bytes = include_bytes!("tray.png");
             let image = image::load_from_memory(icon_bytes)
                 .expect("Failed to load icon")
                 .into_rgba8();
@@ -127,6 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_menu(Box::new(tray_menu))
                 .with_tooltip("CPU Limiter")
                 .with_icon(icon)
+                .with_icon_as_template(true)
                 .with_menu_on_left_click(false)
                 .build()
                 .ok();
