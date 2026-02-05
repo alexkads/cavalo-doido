@@ -1,7 +1,9 @@
 use eframe::egui;
 use limiter::Limiter;
-use single_instance::SingleInstance;
 use std::sync::Arc;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::path::PathBuf;
 use tray_icon::{
     Icon, TrayIconBuilder,
     menu::{Menu, MenuId, MenuItem},
@@ -11,15 +13,86 @@ use ui::CpuLimiterApp;
 mod limiter;
 mod ui;
 
+// Estrutura para gerenciar o lock de instância única
+struct SingleInstanceLock {
+    _file: File,
+    lock_path: PathBuf,
+}
+
+impl SingleInstanceLock {
+    fn try_acquire() -> Result<Self, Box<dyn std::error::Error>> {
+        let lock_path = std::env::temp_dir().join("cpu-limiter.lock");
+        
+        // Tenta criar o arquivo de lock exclusivamente
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path);
+        
+        match file {
+            Ok(mut f) => {
+                // Escreve o PID no arquivo de lock
+                writeln!(f, "{}", std::process::id())?;
+                Ok(Self {
+                    _file: f,
+                    lock_path,
+                })
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Arquivo já existe, verifica se o processo ainda está ativo
+                if let Ok(content) = std::fs::read_to_string(&lock_path) {
+                    if let Ok(pid) = content.trim().parse::<i32>() {
+                        // Verifica se o processo ainda existe
+                        use std::process::Command;
+                        let output = Command::new("ps")
+                            .arg("-p")
+                            .arg(pid.to_string())
+                            .output();
+                        
+                        if let Ok(output) = output {
+                            if output.status.success() {
+                                // Processo ainda existe
+                                return Err("Outra instância do CPU Limiter já está rodando!".into());
+                            }
+                        }
+                    }
+                }
+                
+                // Processo não existe mais, remove o lock antigo e tenta novamente
+                let _ = std::fs::remove_file(&lock_path);
+                let mut f = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&lock_path)?;
+                writeln!(f, "{}", std::process::id())?;
+                Ok(Self {
+                    _file: f,
+                    lock_path,
+                })
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+impl Drop for SingleInstanceLock {
+    fn drop(&mut self) {
+        // Remove o arquivo de lock quando a aplicação terminar
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     // Garantir que apenas uma instância está rodando
-    let instance = SingleInstance::new("cpu-limiter-app")?;
-    if !instance.is_single() {
-        eprintln!("Outra instância do CPU Limiter já está rodando!");
-        std::process::exit(1);
-    }
+    let _instance_lock = match SingleInstanceLock::try_acquire() {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([400.0, 600.0]),
@@ -58,8 +131,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .build()
                 .ok();
 
-            // Manter a instância viva para manter o lock
-            let _instance = instance;
+            // Manter o lock vivo durante toda a execução
+            let _lock = _instance_lock;
 
             Ok(Box::new(CpuLimiterApp::new(
                 _cc,
