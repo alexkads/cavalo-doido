@@ -1,5 +1,6 @@
 use crate::limiter::Limiter;
 use eframe::egui;
+use eframe::egui::scroll_area::ScrollBarVisibility;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::collections::VecDeque;
@@ -172,16 +173,26 @@ impl eframe::App for CpuLimiterApp {
         
         let custom_frame = egui::Frame::NONE
             .fill(bg_color)
-            .inner_margin(egui::Margin::symmetric(24, 16));
+            .inner_margin(egui::Margin::ZERO);
 
         egui::CentralPanel::default().frame(custom_frame).show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.set_width(ui.available_width());
+            let base_margin: i8 = 30;
+            egui::Frame::NONE
+                .inner_margin(egui::Margin {
+                    left: base_margin,
+                    right: base_margin,
+                    top: 16,
+                    bottom: 16,
+                })
+                .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
+                    .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
                 
                 // === HEADER ===
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.add_space(4.0);
                     // Pulsating icon effect (simple color change based on time)
                     let pulse = ((ctx.input(|i| i.time) * 2.0).sin() * 0.3 + 0.7) as f32;
                     let icon_color = egui::Color32::from_rgb(
@@ -212,27 +223,39 @@ impl eframe::App for CpuLimiterApp {
                 ui.add_space(16.0);
                 
                 // === STATS CARDS ROW ===
-                ui.horizontal(|ui| {
-                    let card_width = (ui.available_width() - 24.0) / 4.0;
-                    
-                    // CPU Card
-                    Self::stat_card(ui, card_width, card_color, accent_color, "CPU", &format!("{:.1}%", self.total_cpu_usage), "📊");
-                    ui.add_space(8.0);
-                    
-                    // Memory Card
-                    let mem_percent = if self.memory_total > 0 { 
-                        (self.memory_used as f64 / self.memory_total as f64 * 100.0) as f32 
-                    } else { 0.0 };
-                    Self::stat_card(ui, card_width, card_color, accent_purple, "RAM", &format!("{:.1}%", mem_percent), "💾");
-                    ui.add_space(8.0);
-                    
-                    // Processes Card
-                    Self::stat_card(ui, card_width, card_color, accent_orange, "PROCS", &format!("{}", self.cached_processes.len()), "🔢");
-                    ui.add_space(8.0);
-                    
-                    // Uptime Card
-                    Self::stat_card(ui, card_width, card_color, accent_green, "UPTIME", &Self::format_uptime(self.uptime_seconds), "⏱");
-                });
+                egui::ScrollArea::horizontal()
+                    .id_salt("stats_cards")
+                    .auto_shrink([false, true])
+                    .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let card_spacing = 8.0;
+                            let min_card_outer = 150.0;
+                            let available = ui.available_width();
+                            let card_outer_width = ((available - (card_spacing * 3.0)) / 4.0).max(min_card_outer);
+                            let card_inner_margin = 10.0;
+                            let card_stroke = 1.0;
+                            let card_inner_width = (card_outer_width - (card_inner_margin * 2.0) - (card_stroke * 2.0)).max(0.0);
+
+                            // CPU Card
+                            Self::stat_card(ui, card_inner_width, card_color, accent_color, "CPU", &format!("{:.1}%", self.total_cpu_usage), "📊");
+                            ui.add_space(card_spacing);
+
+                            // Memory Card
+                            let mem_percent = if self.memory_total > 0 {
+                                (self.memory_used as f64 / self.memory_total as f64 * 100.0) as f32
+                            } else { 0.0 };
+                            Self::stat_card(ui, card_inner_width, card_color, accent_purple, "RAM", &format!("{:.1}%", mem_percent), "💾");
+                            ui.add_space(card_spacing);
+
+                            // Processes Card
+                            Self::stat_card(ui, card_inner_width, card_color, accent_orange, "PROCS", &format!("{}", self.cached_processes.len()), "🔢");
+                            ui.add_space(card_spacing);
+
+                            // Uptime Card
+                            Self::stat_card(ui, card_inner_width, card_color, accent_green, "UPTIME", &Self::format_uptime(self.uptime_seconds), "⏱");
+                        });
+                    });
                 ui.add_space(16.0);
 
                 // === CPU GRAPH ===
@@ -498,7 +521,7 @@ impl eframe::App for CpuLimiterApp {
                         ui.label(egui::RichText::new("Made with ❤️ in Rust").size(10.0).color(egui::Color32::from_white_alpha(60)));
                     });
                 });
-
+                });
             });
         });
         
@@ -559,5 +582,6 @@ fn configure_visuals(ctx: &egui::Context) {
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
     style.spacing.window_margin = egui::Margin::same(16);
     style.spacing.button_padding = egui::vec2(12.0, 8.0);
+    style.spacing.scroll = egui::style::ScrollStyle::solid();
     ctx.set_style(style);
 }
