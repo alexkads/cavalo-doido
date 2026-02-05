@@ -1,10 +1,14 @@
-use nix::sys::signal::{kill, Signal};
+use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use parking_lot::Mutex;
+use std::collections::{HashSet, VecDeque};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::Duration;
 use sysinfo::System;
-use parking_lot::Mutex;
 
 #[derive(Clone, Debug)]
 pub struct LimiterState {
@@ -42,7 +46,7 @@ impl Limiter {
         let mut state = self.state.lock();
         state.target_pid = Some(pid);
         state.mode = LimiterMode::Targeted;
-        // Resume previous target if changed? 
+        // Resume previous target if changed?
         // For simplicity, the worker handles cleanup when state changes or on loop.
     }
 
@@ -79,13 +83,23 @@ impl Limiter {
 
         thread::spawn(move || {
             let mut sys = System::new_all();
-            let mut currently_throttled_pid: Option<i32> = None;
+            let mut targeted_pid: Option<i32> = None;
+            let mut paused_global: VecDeque<i32> = VecDeque::new();
+            let mut paused_global_set: HashSet<i32> = HashSet::new();
 
             // Duty cycle period in ms
             const PERIOD_MS: u64 = 100;
+            const GLOBAL_HYSTERESIS: f32 = 5.0;
 
             loop {
                 if stop_handle.load(Ordering::Relaxed) {
+                    if let Some(pid) = targeted_pid.take() {
+                        let _ = kill(Pid::from_raw(pid), Signal::SIGCONT);
+                    }
+                    while let Some(pid) = paused_global.pop_front() {
+                        let _ = kill(Pid::from_raw(pid), Signal::SIGCONT);
+                        paused_global_set.remove(&pid);
+                    }
                     break;
                 }
 
@@ -95,75 +109,110 @@ impl Limiter {
                 };
 
                 if !active {
-                    // Make sure we release any throttled process
-                    if let Some(pid) = currently_throttled_pid {
-                         let _ = kill(Pid::from_raw(pid), Signal::SIGCONT);
-                         currently_throttled_pid = None;
+                    if let Some(pid) = targeted_pid.take() {
+                        let _ = kill(Pid::from_raw(pid), Signal::SIGCONT);
                     }
-                    thread::sleep(Duration::from_millis(100));
+                    while let Some(pid) = paused_global.pop_front() {
+                        let _ = kill(Pid::from_raw(pid), Signal::SIGCONT);
+                        paused_global_set.remove(&pid);
+                    }
+                    thread::sleep(Duration::from_millis(PERIOD_MS));
                     continue;
                 }
 
-                let pid_to_throttle = match mode {
-                    LimiterMode::Targeted => target,
-                    LimiterMode::Global => {
-                        // Global logic:
-                        // Refresh CPU usage
-                        sys.refresh_cpu_all();
-                        let total_load = sys.global_cpu_usage();
-                        
-                        // If total load > limit, throttle the highest consumer that isn't us
-                        if total_load > limit as f32 {
-                            sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-                            // Find highest cpu process, excluding ourselves
-                            let myself = std::process::id() as i32;
-                            sys.processes().iter()
-                                .filter(|(pid, _)| pid.as_u32() as i32 != myself)
-                                .max_by(|(_, a), (_, b)| a.cpu_usage().partial_cmp(&b.cpu_usage()).unwrap_or(std::cmp::Ordering::Equal))
-                                .map(|(pid, _)| pid.as_u32() as i32)
+                match mode {
+                    LimiterMode::Targeted => {
+                        if !paused_global.is_empty() {
+                            while let Some(pid) = paused_global.pop_front() {
+                                let _ = kill(Pid::from_raw(pid), Signal::SIGCONT);
+                                paused_global_set.remove(&pid);
+                            }
+                        }
+
+                        if targeted_pid != target {
+                            if let Some(pid) = targeted_pid.take() {
+                                let _ = kill(Pid::from_raw(pid), Signal::SIGCONT);
+                            }
+                            targeted_pid = target;
+                        }
+
+                        if let Some(pid) = targeted_pid {
+                            let run_ms = (PERIOD_MS * limit as u64) / 100;
+                            let stop_ms = PERIOD_MS - run_ms;
+
+                            if kill(Pid::from_raw(pid), Signal::SIGCONT).is_err() {
+                                targeted_pid = None;
+                                thread::sleep(Duration::from_millis(PERIOD_MS));
+                                continue;
+                            }
+                            if run_ms > 0 {
+                                thread::sleep(Duration::from_millis(run_ms));
+                            }
+
+                            if stop_ms > 0 {
+                                if kill(Pid::from_raw(pid), Signal::SIGSTOP).is_err() {
+                                    targeted_pid = None;
+                                    thread::sleep(Duration::from_millis(PERIOD_MS));
+                                    continue;
+                                }
+                                thread::sleep(Duration::from_millis(stop_ms));
+                            }
                         } else {
-                            None
+                            thread::sleep(Duration::from_millis(PERIOD_MS));
                         }
                     }
-                };
+                    LimiterMode::Global => {
+                        if let Some(pid) = targeted_pid.take() {
+                            let _ = kill(Pid::from_raw(pid), Signal::SIGCONT);
+                        }
 
-                // If target changed, resume old one
-                if currently_throttled_pid != pid_to_throttle {
-                     if let Some(old_pid) = currently_throttled_pid {
-                         // Resume old
-                         let _ = kill(Pid::from_raw(old_pid), Signal::SIGCONT);
-                     }
-                     currently_throttled_pid = pid_to_throttle;
-                }
+                        sys.refresh_cpu_all();
+                        let total_load = sys.global_cpu_usage();
+                        let limit_f32 = limit as f32;
+                        let lower_threshold = (limit_f32 - GLOBAL_HYSTERESIS).max(0.0);
 
-                if let Some(pid) = pid_to_throttle {
-                    // Duty cycle logic
-                    // If limit is 50%, run 50ms, stop 50ms.
-                    // If limit is 20%, run 20ms, stop 80ms.
-                    let run_ms = (PERIOD_MS * limit as u64) / 100;
-                    let stop_ms = PERIOD_MS - run_ms;
+                        if total_load > limit_f32 {
+                            sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+                            let myself = std::process::id() as i32;
 
-                    // To be safe, verify process exists before sending
-                    // Nix kill essentially checks existence (ESRCH)
-                    
-                    // Resume (Run)
-                    if let Err(_) = kill(Pid::from_raw(pid), Signal::SIGCONT) {
-                        // Process dead?
-                        currently_throttled_pid = None;
-                        continue;
+                            let mut candidates: Vec<_> = sys
+                                .processes()
+                                .iter()
+                                .filter_map(|(pid, process)| {
+                                    let pid_i32 = pid.as_u32() as i32;
+                                    if pid_i32 == myself || paused_global_set.contains(&pid_i32) {
+                                        return None;
+                                    }
+                                    let usage = process.cpu_usage();
+                                    if usage <= 0.5 {
+                                        return None;
+                                    }
+                                    Some((pid_i32, usage))
+                                })
+                                .collect();
+
+                            candidates.sort_by(|a, b| {
+                                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                            });
+
+                            if let Some((pid, _)) = candidates.first() {
+                                let pid_i32 = *pid;
+                                if kill(Pid::from_raw(pid_i32), Signal::SIGSTOP).is_ok() {
+                                    paused_global_set.insert(pid_i32);
+                                    paused_global.push_back(pid_i32);
+                                } else {
+                                    paused_global_set.remove(&pid_i32);
+                                }
+                            }
+                        } else if total_load < lower_threshold {
+                            if let Some(pid) = paused_global.pop_front() {
+                                let _ = kill(Pid::from_raw(pid), Signal::SIGCONT);
+                                paused_global_set.remove(&pid);
+                            }
+                        }
+
+                        thread::sleep(Duration::from_millis(PERIOD_MS));
                     }
-                    thread::sleep(Duration::from_millis(run_ms));
-
-                    // Stop
-                    if stop_ms > 0 {
-                         if let Err(_) = kill(Pid::from_raw(pid), Signal::SIGSTOP) {
-                             currently_throttled_pid = None;
-                             continue;
-                         }
-                         thread::sleep(Duration::from_millis(stop_ms));
-                    }
-                } else {
-                    thread::sleep(Duration::from_millis(PERIOD_MS));
                 }
             }
         });
@@ -177,7 +226,7 @@ mod tests {
     #[test]
     fn test_limiter_state_changes() {
         let limiter = Limiter::new();
-        
+
         // Initial state
         let state = limiter.get_state();
         assert_eq!(state.mode, LimiterMode::Targeted);
