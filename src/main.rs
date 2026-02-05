@@ -3,12 +3,12 @@ use limiter::Limiter;
 use std::sync::Arc;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
 use tray_icon::{
     Icon, TrayIconBuilder,
     menu::{Menu, MenuId, MenuItem},
 };
 use ui::CpuLimiterApp;
+use std::path::PathBuf;
 
 mod limiter;
 mod ui;
@@ -93,6 +93,9 @@ fn set_tray_fixed_length(tray_icon: &tray_icon::TrayIcon) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
+    #[cfg(target_os = "macos")]
+    ensure_launch_agent();
+
     // Garantir que apenas uma instância está rodando
     let _instance_lock = match SingleInstanceLock::try_acquire() {
         Ok(lock) => lock,
@@ -157,4 +160,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     )
     .map_err(|e| e.into())
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_launch_agent() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let exe_str = exe.to_string_lossy();
+    // Only install when running from an .app bundle.
+    if !exe_str.contains(".app/Contents/MacOS/") {
+        return;
+    }
+
+    let home = match std::env::var_os("HOME") {
+        Some(h) => PathBuf::from(h),
+        None => return,
+    };
+    let agent_dir = home.join("Library/LaunchAgents");
+    if std::fs::create_dir_all(&agent_dir).is_err() {
+        return;
+    }
+
+    let plist_path = agent_dir.join("com.alexkads.cpulimiter.plist");
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alexkads.cpulimiter</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+"#,
+        exe_str
+    );
+
+    // Rewrite only if changed.
+    let write = match std::fs::read_to_string(&plist_path) {
+        Ok(existing) => existing != plist,
+        Err(_) => true,
+    };
+    if write {
+        let _ = std::fs::write(&plist_path, plist);
+    }
 }
