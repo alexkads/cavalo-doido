@@ -82,6 +82,14 @@ impl Drop for SingleInstanceLock {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn set_tray_fixed_length(tray_icon: &tray_icon::TrayIcon) {
+    if let Some(status_item) = tray_icon.ns_status_item() {
+        // Fixed width prevents icon shifting when title changes.
+        status_item.setLength(60.0);
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
@@ -131,6 +139,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_menu_on_left_click(false)
                 .build()
                 .ok();
+
+            #[cfg(target_os = "macos")]
+            if let Some(tray_icon) = &tray_icon {
+                set_tray_fixed_length(tray_icon);
+            }
 
             // Manter o lock vivo durante toda a execução
             let _lock = _instance_lock;

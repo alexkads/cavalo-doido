@@ -9,7 +9,6 @@ use tray_icon::{
     MouseButton, MouseButtonState, TrayIcon, TrayIconEvent,
     menu::{MenuEvent, MenuId},
 };
-use image::{Rgba, RgbaImage};
 
 pub struct CpuLimiterApp {
     limiter: Arc<Limiter>,
@@ -32,7 +31,6 @@ pub struct CpuLimiterApp {
     memory_total: u64,
     uptime_seconds: u64,
     start_time: Instant,
-    tray_percent: u8,
 }
 
 impl CpuLimiterApp {
@@ -66,7 +64,6 @@ impl CpuLimiterApp {
             total_cpu_usage: 0.0,
             uptime_seconds: 0,
             start_time: Instant::now(),
-            tray_percent: 255,
         }
     }
 
@@ -81,12 +78,8 @@ impl CpuLimiterApp {
         self.uptime_seconds = self.start_time.elapsed().as_secs();
         if let Some(tray_icon) = &self._tray_icon {
             let percent = self.total_cpu_usage.round().clamp(0.0, 100.0) as u8;
-            if percent != self.tray_percent {
-                if let Some(icon) = Self::build_tray_icon(percent) {
-                    let _ = tray_icon.set_icon_with_as_template(Some(icon), true);
-                }
-                self.tray_percent = percent;
-            }
+            let title = format!("{:>3}%", percent);
+            tray_icon.set_title(Some(title));
         }
         
         if self.cpu_history.len() >= 300 {
@@ -569,62 +562,6 @@ impl CpuLimiterApp {
             });
     }
 
-    fn build_tray_icon(percent: u8) -> Option<tray_icon::Icon> {
-        let base_bytes = include_bytes!("tray_base.png");
-        let base = image::load_from_memory(base_bytes).ok()?.into_rgba8();
-        let base_small = image::imageops::resize(&base, 18, 18, image::imageops::FilterType::Nearest);
-
-        let mut canvas: RgbaImage = RgbaImage::from_pixel(52, 24, Rgba([0, 0, 0, 0]));
-        image::imageops::overlay(&mut canvas, &base_small, 2, 3);
-
-        let text = if percent == 100 {
-            "100%".to_string()
-        } else {
-            format!("{:02}%", percent)
-        };
-        Self::draw_text_6x8(&mut canvas, &text, 24, 8, Rgba([0, 0, 0, 255]));
-
-        let (width, height) = canvas.dimensions();
-        let rgba = canvas.into_raw();
-        tray_icon::Icon::from_rgba(rgba, width, height).ok()
-    }
-
-    fn draw_text_6x8(img: &mut RgbaImage, text: &str, x: i32, y: i32, color: Rgba<u8>) {
-        let mut cursor_x = x;
-        for ch in text.chars() {
-            Self::draw_char_6x8(img, ch, cursor_x, y, color);
-            cursor_x += 7;
-        }
-    }
-
-    fn draw_char_6x8(img: &mut RgbaImage, ch: char, x: i32, y: i32, color: Rgba<u8>) {
-        let pattern = match ch {
-            '0' => [0b011110, 0b110011, 0b110011, 0b110011, 0b110011, 0b110011, 0b011110, 0b000000],
-            '1' => [0b001100, 0b011100, 0b001100, 0b001100, 0b001100, 0b001100, 0b011110, 0b000000],
-            '2' => [0b011110, 0b110011, 0b000011, 0b000110, 0b001100, 0b011000, 0b111111, 0b000000],
-            '3' => [0b111110, 0b000011, 0b000011, 0b011110, 0b000011, 0b000011, 0b111110, 0b000000],
-            '4' => [0b000110, 0b001110, 0b011110, 0b110110, 0b111111, 0b000110, 0b000110, 0b000000],
-            '5' => [0b111111, 0b110000, 0b110000, 0b111110, 0b000011, 0b000011, 0b111110, 0b000000],
-            '6' => [0b011110, 0b110000, 0b110000, 0b111110, 0b110011, 0b110011, 0b011110, 0b000000],
-            '7' => [0b111111, 0b000011, 0b000110, 0b001100, 0b011000, 0b011000, 0b011000, 0b000000],
-            '8' => [0b011110, 0b110011, 0b110011, 0b011110, 0b110011, 0b110011, 0b011110, 0b000000],
-            '9' => [0b011110, 0b110011, 0b110011, 0b011111, 0b000011, 0b000011, 0b011110, 0b000000],
-            '%' => [0b110011, 0b110110, 0b001100, 0b011000, 0b110110, 0b100011, 0b000000, 0b000000],
-            _ => [0; 8],
-        };
-
-        for (row, bits) in pattern.iter().enumerate() {
-            for col in 0..6 {
-                if (bits >> (5 - col)) & 1 == 1 {
-                    let px = x + col as i32;
-                    let py = y + row as i32;
-                    if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
-                        img.put_pixel(px as u32, py as u32, color);
-                    }
-                }
-            }
-        }
-    }
 }
 
 fn configure_visuals(ctx: &egui::Context) {
