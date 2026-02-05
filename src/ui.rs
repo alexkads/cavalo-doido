@@ -176,7 +176,7 @@ impl eframe::App for CpuLimiterApp {
             .inner_margin(egui::Margin::ZERO);
 
         egui::CentralPanel::default().frame(custom_frame).show(ctx, |ui| {
-            let base_margin: i8 = 30;
+            let base_margin: i8 = 24;
             egui::Frame::NONE
                 .inner_margin(egui::Margin {
                     left: base_margin,
