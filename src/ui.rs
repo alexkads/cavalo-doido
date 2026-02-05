@@ -171,12 +171,12 @@ impl eframe::App for CpuLimiterApp {
         let card_color = egui::Color32::from_rgb(30, 32, 45);
         
         let custom_frame = egui::Frame::NONE
-            .fill(bg_color);
+            .fill(bg_color)
+            .inner_margin(egui::Margin::symmetric(24, 16));
 
         egui::CentralPanel::default().frame(custom_frame).show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                egui::Frame::new().inner_margin(egui::Margin::symmetric(24, 16)).show(ui, |ui| {
                 
                 // === HEADER ===
                 ui.add_space(8.0);
@@ -499,7 +499,6 @@ impl eframe::App for CpuLimiterApp {
                     });
                 });
 
-                });
             });
         });
         
