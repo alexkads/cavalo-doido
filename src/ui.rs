@@ -32,6 +32,7 @@ pub struct CpuLimiterApp {
     uptime_seconds: u64,
     start_time: Instant,
     cpu_count: usize,
+    start_at_login: bool,
 }
 
 impl CpuLimiterApp {
@@ -47,6 +48,7 @@ impl CpuLimiterApp {
         system.refresh_memory();
         system.refresh_cpu_all();
         let cpu_count = system.cpus().len();
+        let start_at_login = Self::is_launch_agent_installed();
         
         Self {
             limiter,
@@ -68,6 +70,7 @@ impl CpuLimiterApp {
             uptime_seconds: 0,
             start_time: Instant::now(),
             cpu_count,
+            start_at_login,
         }
     }
 
@@ -422,6 +425,23 @@ impl eframe::App for CpuLimiterApp {
                             self.is_active = !self.is_active;
                             self.limiter.toggle(self.is_active);
                         }
+                        
+                        ui.add_space(12.0);
+                        
+                        // Start at Login checkbox
+                        ui.horizontal(|ui| {
+                            let mut start_at_login_changed = self.start_at_login;
+                            let checkbox = egui::Checkbox::new(&mut start_at_login_changed, "");
+                            if ui.add(checkbox).changed() {
+                                self.start_at_login = start_at_login_changed;
+                                if self.start_at_login {
+                                    Self::install_launch_agent();
+                                } else {
+                                    Self::remove_launch_agent();
+                                }
+                            }
+                            ui.label(egui::RichText::new("🚀 Start at Login").color(egui::Color32::LIGHT_GRAY));
+                        }).response.on_hover_text("Automatically start CPU Limiter when you log in");
                     });
 
                 ui.add_space(16.0);
@@ -725,6 +745,83 @@ impl CpuLimiterApp {
                     ui.label(egui::RichText::new(value).size(16.0).strong().color(accent));
                 });
             });
+    }
+    
+    #[cfg(target_os = "macos")]
+    fn get_launch_agent_path() -> Option<std::path::PathBuf> {
+        let home = std::env::var_os("HOME")?;
+        Some(std::path::PathBuf::from(home).join("Library/LaunchAgents/com.alexkads.cpulimiter.plist"))
+    }
+    
+    #[cfg(not(target_os = "macos"))]
+    fn get_launch_agent_path() -> Option<std::path::PathBuf> {
+        None
+    }
+    
+    fn is_launch_agent_installed() -> bool {
+        if let Some(path) = Self::get_launch_agent_path() {
+            path.exists()
+        } else {
+            false
+        }
+    }
+    
+    #[cfg(target_os = "macos")]
+    fn install_launch_agent() {
+        let exe = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        let exe_str = exe.to_string_lossy();
+        
+        let home = match std::env::var_os("HOME") {
+            Some(h) => std::path::PathBuf::from(h),
+            None => return,
+        };
+        let agent_dir = home.join("Library/LaunchAgents");
+        if std::fs::create_dir_all(&agent_dir).is_err() {
+            return;
+        }
+
+        let plist_path = agent_dir.join("com.alexkads.cpulimiter.plist");
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alexkads.cpulimiter</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{}</string>
+    <string>--minimized</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+"#,
+            exe_str
+        );
+
+        let _ = std::fs::write(&plist_path, plist);
+    }
+    
+    #[cfg(not(target_os = "macos"))]
+    fn install_launch_agent() {
+        // Not implemented for non-macOS
+    }
+    
+    #[cfg(target_os = "macos")]
+    fn remove_launch_agent() {
+        if let Some(path) = Self::get_launch_agent_path() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    
+    #[cfg(not(target_os = "macos"))]
+    fn remove_launch_agent() {
+        // Not implemented for non-macOS
     }
 
 }
