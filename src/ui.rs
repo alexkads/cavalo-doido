@@ -31,6 +31,7 @@ pub struct CpuLimiterApp {
     memory_total: u64,
     uptime_seconds: u64,
     start_time: Instant,
+    cpu_count: usize,
 }
 
 impl CpuLimiterApp {
@@ -44,6 +45,8 @@ impl CpuLimiterApp {
 
         let mut system = System::new_all();
         system.refresh_memory();
+        system.refresh_cpu_all();
+        let cpu_count = system.cpus().len();
         
         Self {
             limiter,
@@ -64,6 +67,7 @@ impl CpuLimiterApp {
             total_cpu_usage: 0.0,
             uptime_seconds: 0,
             start_time: Instant::now(),
+            cpu_count,
         }
     }
 
@@ -208,7 +212,7 @@ impl eframe::App for CpuLimiterApp {
                     ui.label(egui::RichText::new("⚡").size(32.0).color(icon_color));
                     ui.vertical(|ui| {
                         ui.label(egui::RichText::new("CPU LIMITER").size(22.0).strong().color(egui::Color32::WHITE));
-                        ui.label(egui::RichText::new("SYSTEM CONTROL").size(10.0).color(egui::Color32::from_white_alpha(150)).extra_letter_spacing(2.0));
+                        ui.label(egui::RichText::new(&format!("SYSTEM CONTROL • {} CORES", self.cpu_count)).size(10.0).color(egui::Color32::from_white_alpha(150)).extra_letter_spacing(2.0));
                     });
                     
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -375,7 +379,27 @@ impl eframe::App for CpuLimiterApp {
                             let checkbox = egui::Checkbox::new(&mut self.global_mode, "");
                             ui.add(checkbox);
                             ui.label(egui::RichText::new("🌐 Global Auto-Limit Mode").color(egui::Color32::LIGHT_GRAY));
-                        }).response.on_hover_text("Automatically limit the highest CPU consuming process");
+                        }).response.on_hover_text("Limits system when AVERAGE CPU exceeds target");
+                        
+                        // Info box explaining global mode
+                        if self.global_mode {
+                            ui.add_space(8.0);
+                            egui::Frame::group(ui.style())
+                                .fill(egui::Color32::from_rgb(59, 130, 246).gamma_multiply(0.1))
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(59, 130, 246).gamma_multiply(0.4)))
+                                .corner_radius(8)
+                                .inner_margin(10.0)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new("ℹ️").size(12.0));
+                                        ui.vertical(|ui| {
+                                            ui.label(egui::RichText::new("Global mode limits the AVERAGE system CPU").size(10.0).color(egui::Color32::from_white_alpha(180)));
+                                            ui.label(egui::RichText::new(&format!("Your Mac has {} cores. Process CPU is shown per-core.", self.cpu_count)).size(9.0).color(egui::Color32::from_white_alpha(150)));
+                                            ui.label(egui::RichText::new(&format!("Current avg: {:.1}% | Target: {}%", self.total_cpu_usage, self.limit_value)).size(9.0).color(egui::Color32::from_white_alpha(150)));
+                                        });
+                                    });
+                                });
+                        }
                         
                         if self.global_mode {
                             self.limiter.set_global(self.limit_value);
@@ -401,6 +425,138 @@ impl eframe::App for CpuLimiterApp {
                     });
 
                 ui.add_space(16.0);
+
+                // === LIMITER STATUS ===
+                if self.is_active {
+                    let limiter_status = self.limiter.get_status();
+                    let status_color = if limiter_status.is_actively_limiting { 
+                        egui::Color32::from_rgb(251, 146, 60) // Orange when actively limiting
+                    } else { 
+                        egui::Color32::from_rgb(100, 116, 139) // Gray when monitoring
+                    };
+                    
+                    egui::Frame::group(ui.style())
+                        .fill(status_color.gamma_multiply(0.08))
+                        .stroke(egui::Stroke::new(1.5, status_color.gamma_multiply(0.5)))
+                        .corner_radius(12)
+                        .inner_margin(16.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                // Pulsing indicator when actively limiting
+                                if limiter_status.is_actively_limiting {
+                                    let pulse = ((ctx.input(|i| i.time) * 3.0).sin() * 0.4 + 0.6) as f32;
+                                    let pulse_color = egui::Color32::from_rgb(
+                                        (239 as f32 * pulse) as u8,
+                                        (68 as f32 * pulse) as u8,
+                                        (68 as f32 * pulse) as u8,
+                                    );
+                                    ui.label(egui::RichText::new("●").size(20.0).color(pulse_color));
+                                } else {
+                                    ui.label(egui::RichText::new("○").size(20.0).color(status_color));
+                                }
+                                
+                                ui.vertical(|ui| {
+                                    let status_text = if limiter_status.is_actively_limiting {
+                                        "ACTIVELY LIMITING"
+                                    } else {
+                                        "MONITORING"
+                                    };
+                                    ui.label(egui::RichText::new(status_text).size(12.0).strong().color(status_color));
+                                    
+                                    if self.global_mode {
+                                        ui.label(egui::RichText::new("Mode: Global Auto-Limit").size(10.0).color(egui::Color32::from_white_alpha(150)));
+                                    } else {
+                                        ui.label(egui::RichText::new("Mode: Targeted Process").size(10.0).color(egui::Color32::from_white_alpha(150)));
+                                    }
+                                });
+                                
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.vertical(|ui| {
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
+                                            ui.label(egui::RichText::new(&format!("Pause Count: {}", limiter_status.pause_count))
+                                                .size(10.0)
+                                                .color(egui::Color32::from_white_alpha(150)));
+                                        });
+                                        
+                                        if let Some(last_action) = limiter_status.last_action_time {
+                                            if let Ok(elapsed) = last_action.elapsed() {
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
+                                                    ui.label(egui::RichText::new(&format!("Last action: {:.1}s ago", elapsed.as_secs_f32()))
+                                                        .size(10.0)
+                                                        .color(egui::Color32::from_white_alpha(150)));
+                                                });
+                                            }
+                                        }
+                                    });
+                                });
+                            });
+                            
+                            // Show which processes are being limited
+                            if !limiter_status.currently_paused_pids.is_empty() {
+                                ui.add_space(8.0);
+                                ui.separator();
+                                ui.add_space(8.0);
+                                
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(egui::RichText::new("⏸ Paused:").size(10.0).color(egui::Color32::from_white_alpha(150)));
+                                    
+                                    for pid in &limiter_status.currently_paused_pids {
+                                        // Find process name from cached processes
+                                        let process_name = self.cached_processes.iter()
+                                            .find(|(p, _, _)| p == pid)
+                                            .map(|(_, name, _)| {
+                                                if name.len() > 15 { 
+                                                    format!("{}...", &name[0..12]) 
+                                                } else { 
+                                                    name.clone() 
+                                                }
+                                            })
+                                            .unwrap_or_else(|| "Unknown".to_string());
+                                        
+                                        egui::Frame::group(ui.style())
+                                            .fill(egui::Color32::from_rgb(239, 68, 68).gamma_multiply(0.15))
+                                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(239, 68, 68)))
+                                            .corner_radius(6)
+                                            .inner_margin(egui::Margin::symmetric(8, 4))
+                                            .show(ui, |ui| {
+                                                ui.label(egui::RichText::new(&format!("{} ({})", process_name, pid))
+                                                    .size(10.0)
+                                                    .color(egui::Color32::from_rgb(239, 68, 68)));
+                                            });
+                                    }
+                                });
+                            } else if let Some(target_pid) = limiter_status.target_pid {
+                                // Show target in targeted mode even if not currently paused
+                                if !self.global_mode {
+                                    ui.add_space(8.0);
+                                    ui.separator();
+                                    ui.add_space(8.0);
+                                    
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new("🎯 Target:").size(10.0).color(egui::Color32::from_white_alpha(150)));
+                                        
+                                        let process_name = self.cached_processes.iter()
+                                            .find(|(p, _, _)| *p == target_pid)
+                                            .map(|(_, name, _)| name.clone())
+                                            .unwrap_or_else(|| "Unknown".to_string());
+                                        
+                                        egui::Frame::group(ui.style())
+                                            .fill(accent_color.gamma_multiply(0.15))
+                                            .stroke(egui::Stroke::new(1.0, accent_color))
+                                            .corner_radius(6)
+                                            .inner_margin(egui::Margin::symmetric(8, 4))
+                                            .show(ui, |ui| {
+                                                ui.label(egui::RichText::new(&format!("{} ({})", process_name, target_pid))
+                                                    .size(10.0)
+                                                    .color(accent_color));
+                                            });
+                                    });
+                                }
+                            }
+                        });
+                    
+                    ui.add_space(16.0);
+                }
 
                 // === PROCESSES ===
                 ui.horizontal(|ui| {
@@ -453,7 +609,8 @@ impl eframe::App for CpuLimiterApp {
                                             // Header
                                             ui.label(egui::RichText::new("PID").size(10.0).strong().color(egui::Color32::GRAY));
                                             ui.label(egui::RichText::new("NAME").size(10.0).strong().color(egui::Color32::GRAY));
-                                            ui.label(egui::RichText::new("CPU").size(10.0).strong().color(egui::Color32::GRAY));
+                                            ui.label(egui::RichText::new("CPU").size(10.0).strong().color(egui::Color32::GRAY))
+                                                .on_hover_text(format!("Per-core usage. Values >100% = multiple cores.\n{} cores available", self.cpu_count));
                                             ui.end_row();
 
                                             for (pid, name, cpu) in filtered {
@@ -507,9 +664,17 @@ impl eframe::App for CpuLimiterApp {
                                                     painter.rect_filled(filled_rect, 3.0, cpu_color);
                                                     
                                                     ui.add_space(4.0);
+                                                    let hover_text = if *cpu > 100.0 {
+                                                        format!("Using {:.1} cores ({}% per core)", cpu / 100.0, cpu)
+                                                    } else {
+                                                        "CPU usage per core".to_string()
+                                                    };
+                                                    
                                                     if ui.add(egui::Label::new(
                                                         egui::RichText::new(format!("{:.1}%", cpu)).color(cpu_color).strong().size(11.0)
-                                                    ).sense(egui::Sense::click())).clicked()
+                                                    ).sense(egui::Sense::click()))
+                                                    .on_hover_text(hover_text)
+                                                    .clicked()
                                                     {
                                                         self.selected_pid = Some(*pid);
                                                         if !self.global_mode { self.limiter.set_target(*pid); }

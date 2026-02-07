@@ -18,6 +18,15 @@ pub struct LimiterState {
     pub is_active: bool,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct LimiterStatus {
+    pub currently_paused_pids: Vec<i32>,
+    pub target_pid: Option<i32>,
+    pub is_actively_limiting: bool,
+    pub pause_count: u64,
+    pub last_action_time: Option<std::time::SystemTime>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LimiterMode {
     Targeted, // Limit specific PID
@@ -27,6 +36,7 @@ pub enum LimiterMode {
 pub struct Limiter {
     state: Arc<Mutex<LimiterState>>,
     stop_signal: Arc<AtomicBool>,
+    status: Arc<Mutex<LimiterStatus>>,
 }
 
 impl Limiter {
@@ -39,6 +49,7 @@ impl Limiter {
                 is_active: false,
             })),
             stop_signal: Arc::new(AtomicBool::new(false)),
+            status: Arc::new(Mutex::new(LimiterStatus::default())),
         }
     }
 
@@ -77,9 +88,14 @@ impl Limiter {
         self.state.lock().clone()
     }
 
+    pub fn get_status(&self) -> LimiterStatus {
+        self.status.lock().clone()
+    }
+
     pub fn start_background_task(&self) {
         let state_handle = self.state.clone();
         let stop_handle = self.stop_signal.clone();
+        let status_handle = self.status.clone();
 
         thread::spawn(move || {
             let mut sys = System::new_all();
@@ -115,6 +131,13 @@ impl Limiter {
                     while let Some(pid) = paused_global.pop_front() {
                         let _ = kill(Pid::from_raw(pid), Signal::SIGCONT);
                         paused_global_set.remove(&pid);
+                    }
+                    // Update status when inactive
+                    {
+                        let mut status = status_handle.lock();
+                        status.currently_paused_pids.clear();
+                        status.target_pid = None;
+                        status.is_actively_limiting = false;
                     }
                     thread::sleep(Duration::from_millis(PERIOD_MS));
                     continue;
@@ -155,7 +178,22 @@ impl Limiter {
                                     thread::sleep(Duration::from_millis(PERIOD_MS));
                                     continue;
                                 }
+                                // Update status - process is being paused
+                                {
+                                    let mut status = status_handle.lock();
+                                    status.target_pid = Some(pid);
+                                    status.currently_paused_pids = vec![pid];
+                                    status.is_actively_limiting = true;
+                                    status.pause_count += 1;
+                                    status.last_action_time = Some(std::time::SystemTime::now());
+                                }
                                 thread::sleep(Duration::from_millis(stop_ms));
+                            } else {
+                                // Not pausing, just update target
+                                let mut status = status_handle.lock();
+                                status.target_pid = Some(pid);
+                                status.currently_paused_pids.clear();
+                                status.is_actively_limiting = false;
                             }
                         } else {
                             thread::sleep(Duration::from_millis(PERIOD_MS));
@@ -200,14 +238,32 @@ impl Limiter {
                                 if kill(Pid::from_raw(pid_i32), Signal::SIGSTOP).is_ok() {
                                     paused_global_set.insert(pid_i32);
                                     paused_global.push_back(pid_i32);
+                                    // Update status
+                                    {
+                                        let mut status = status_handle.lock();
+                                        status.pause_count += 1;
+                                        status.last_action_time = Some(std::time::SystemTime::now());
+                                    }
                                 } else {
                                     paused_global_set.remove(&pid_i32);
                                 }
+                            }
+                            // Update current paused list
+                            {
+                                let mut status = status_handle.lock();
+                                status.currently_paused_pids = paused_global.iter().copied().collect();
+                                status.is_actively_limiting = !paused_global.is_empty();
                             }
                         } else if total_load < lower_threshold {
                             if let Some(pid) = paused_global.pop_front() {
                                 let _ = kill(Pid::from_raw(pid), Signal::SIGCONT);
                                 paused_global_set.remove(&pid);
+                            }
+                            // Update current paused list
+                            {
+                                let mut status = status_handle.lock();
+                                status.currently_paused_pids = paused_global.iter().copied().collect();
+                                status.is_actively_limiting = !paused_global.is_empty();
                             }
                         }
 

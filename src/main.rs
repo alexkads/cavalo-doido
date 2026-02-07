@@ -96,6 +96,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     ensure_launch_agent();
 
+    // Verificar se deve iniciar minimizado
+    let start_minimized = std::env::args().any(|arg| arg == "--minimized" || arg == "--background");
+
     // Garantir que apenas uma instância está rodando
     let _instance_lock = match SingleInstanceLock::try_acquire() {
         Ok(lock) => lock,
@@ -106,7 +109,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([400.0, 600.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([400.0, 600.0])
+            .with_visible(!start_minimized),
         ..Default::default()
     };
 
@@ -194,6 +199,7 @@ fn ensure_launch_agent() {
   <key>ProgramArguments</key>
   <array>
     <string>{}</string>
+    <string>--minimized</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
